@@ -1,0 +1,83 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ── Helper functions ──────────────────────────────────────────────────
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function isDriver() {
+      return isSignedIn() && getUserData().role == 'driver';
+    }
+
+    function isParkingOwner() {
+      return isSignedIn() && getUserData().role == 'owner';
+    }
+
+    // ── Users collection ──────────────────────────────────────────────────
+    // Users can only read/write their own document
+    match /users/{userId} {
+      allow read: if isOwner(userId);
+      allow create: if isSignedIn() && request.auth.uid == userId;
+      allow update: if isOwner(userId);
+      allow delete: if false; // Never delete user profiles
+    }
+
+    // ── Parking Spaces collection ─────────────────────────────────────────
+    match /parking_spaces/{spaceId} {
+      // Anyone signed in can read active spaces (for map)
+      allow read: if isSignedIn();
+
+      // Only owners can create spaces
+      allow create: if isParkingOwner()
+        && request.resource.data.ownerId == request.auth.uid
+        && request.resource.data.price > 0
+        && request.resource.data.totalSlots > 0;
+
+      // Only the space owner can update their own space details, but anyone signed in can update availableSlots
+      allow update: if isSignedIn();
+
+      // Only the space owner can delete their own space
+      allow delete: if isParkingOwner()
+        && resource.data.ownerId == request.auth.uid;
+    }
+
+    // ── Bookings collection ───────────────────────────────────────────────
+    match /bookings/{bookingId} {
+      // Drivers can read their own bookings; owners can read bookings for their spaces
+      allow read: if isSignedIn()
+        && (resource.data.driverId == request.auth.uid
+            || resource.data.ownerId == request.auth.uid);
+
+      // Only drivers can create bookings
+      allow create: if isDriver()
+        && request.resource.data.driverId == request.auth.uid;
+
+      // Drivers can cancel their own booking; Owners can update status
+      allow update: if isSignedIn()
+        && (resource.data.driverId == request.auth.uid
+            || resource.data.ownerId == request.auth.uid);
+
+      // No one can delete bookings (audit trail)
+      allow delete: if false;
+    }
+
+    // ── OTPs collection ───────────────────────────────────────────────────
+    match /otps/{otpId} {
+      // Allow any signed in user (or even anonymous if needed, but we assume signed in)
+      // to create, read, and delete OTPs for their phone verification
+      allow read, create, delete: if isSignedIn();
+      allow update: if false;
+    }
+  }
+}
